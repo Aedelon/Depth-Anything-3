@@ -3,13 +3,13 @@
 <!-- <h2 style="border-top: none; margin-top: 3px;">Recovering the Visual Space from Any Views</h2> -->
 
 
-[**Haotong Lin**](https://haotongl.github.io/)<sup>\*</sup> · [**Sili Chen**](https://github.com/SiliChen321)<sup>\*</sup> · [**Junhao Liew**](https://liewjunhao.github.io/)<sup>\*</sup> · [**Donny Y. Chen**](https://donydchen.github.io)<sup>\*</sup> · [**Zhenyu Li**](https://zhyever.github.io/) · [**Guang Shi**](https://scholar.google.com/citations?user=MjXxWbUAAAAJ&hl=en) · [**Jiashi Feng**](https://scholar.google.com.sg/citations?user=Q8iay0gAAAAJ&hl=en)
+[**Haotong Lin**](https://haotongl.github.io/)<sup>&ast;</sup> · [**Sili Chen**](https://github.com/SiliChen321)<sup>&ast;</sup> · [**Jun Hao Liew**](https://liewjunhao.github.io/)<sup>&ast;</sup> · [**Donny Y. Chen**](https://donydchen.github.io)<sup>&ast;</sup> · [**Zhenyu Li**](https://zhyever.github.io/) · [**Guang Shi**](https://scholar.google.com/citations?user=MjXxWbUAAAAJ&hl=en) · [**Jiashi Feng**](https://scholar.google.com.sg/citations?user=Q8iay0gAAAAJ&hl=en)
 <br>
-[**Bingyi Kang**](https://bingykang.github.io/)<sup>\*&dagger;</sup>
+[**Bingyi Kang**](https://bingykang.github.io/)<sup>&ast;&dagger;</sup>
 
-&dagger;project lead&emsp;*Equal Contribution
+&dagger;project lead&emsp;&ast;Equal Contribution
 
-<a href="https://arxiv.org/abs/"><img src='https://img.shields.io/badge/arXiv-Depth Anything 3-red' alt='Paper PDF'></a>
+<a href="https://arxiv.org/abs/2511.10647"><img src='https://img.shields.io/badge/arXiv-Depth Anything 3-red' alt='Paper PDF'></a>
 <a href='https://depth-anything-3.github.io'><img src='https://img.shields.io/badge/Project_Page-Depth Anything 3-green' alt='Project Page'></a>
 <a href='https://huggingface.co/spaces/depth-anything/Depth-Anything-3'><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Demo-blue'></a>
 <!-- <a href='https://huggingface.co/datasets/depth-anything/VGB'><img src='https://img.shields.io/badge/Benchmark-VisGeo-yellow' alt='Benchmark'></a> -->
@@ -37,7 +37,7 @@ All models are trained exclusively on **public academic datasets**.
 
 
 ## 📰 News
-- **2025-11-03:** 🎉 Paper, project page, code and models are all released.
+- **2025-11-14:** 🎉 Paper, project page, code and models are all released.
 
 ## ✨ Highlights
 
@@ -146,7 +146,7 @@ da3 auto assets/examples/SOH \
 
 ```
 
-The model architecture is defined in [`DepthAnything3Net`](src/depth_anything_3/model/da3.py), and specified with a Yaml config file located at [`src/depth_anything_3/configs`](src/depth_anything_3/configs). The input and output processing are handeled by [`DepthAnything3`](src/depth_anything_3/api.py). To customize the model architecutre, simply create a new config file (*e.g.*, `path/to/new/config`) as:
+The model architecture is defined in [`DepthAnything3Net`](src/depth_anything_3/model/da3.py), and specified with a Yaml config file located at [`src/depth_anything_3/configs`](src/depth_anything_3/configs). The input and output processing are handled by [`DepthAnything3`](src/depth_anything_3/api.py). To customize the model architecture, simply create a new config file (*e.g.*, `path/to/new/config`) as:
 
 ```yaml
 __object__:
@@ -222,7 +222,7 @@ If you find Depth Anything 3 useful in your research or projects, please cite ou
 @article{depthanything3,
   title={Depth Anything 3: Recovering the visual space from any views},
   author={Haotong Lin and Sili Chen and Jun Hao Liew and Donny Y. Chen and Zhenyu Li and Guang Shi and Jiashi Feng and Bingyi Kang},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
+  journal={arXiv preprint arXiv:2511.10647},
   year={2025}
 }
 ```
