@@ -21,3 +21,4 @@ moviepy
 plyfile
 pillow_heif
 safetensors
+pycolmap
