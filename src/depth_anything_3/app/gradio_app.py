@@ -499,6 +499,9 @@ class DepthAnything3App:
         filter_black_bg: gr.Checkbox,
         filter_white_bg: gr.Checkbox,
         process_res_method_dropdown: gr.Dropdown,
+        batch_size_ctrl: gr.Number,
+        mixed_precision_ctrl: gr.Dropdown,
+        force_fp32_on_mps_ctrl: gr.Checkbox,
         target_dir_output: gr.Textbox,
         is_example: gr.Textbox,
         reconstruction_output: gr.Model3D,
@@ -513,6 +516,9 @@ class DepthAnything3App:
             filter_black_bg,
             filter_white_bg,
             process_res_method_dropdown,
+            batch_size_ctrl,
+            mixed_precision_ctrl,
+            force_fp32_on_mps_ctrl,
         ]
 
         # Set up change handlers for all visualization controls
