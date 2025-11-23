@@ -36,3 +36,5 @@ temp*.png
 /outputs
 .idea/
 uv.lock
+
+.venv/
