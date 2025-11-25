@@ -83,9 +83,9 @@ We introduce a new benchmark to rigorously evaluate geometry prediction models o
 ### 📦 Installation
 
 ```bash
-pip install torch\>=2 torchvision
+pip install xformers torch\>=2 torchvision
 pip install -e . # Basic
-pip install -e ".[gs]" # Gaussians Estimation and Rendering
+pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70 # for gaussian head
 pip install -e ".[app]" # Gradio, python>=3.10
 pip install -e ".[all]" # ALL
 ```
@@ -203,6 +203,8 @@ Model = create_object(load_config("path/to/new/config"))
 
 Generally, you should observe that DA3-LARGE achieves comparable results to VGGT.
 
+The Nested series uses an Any-view model to estimate pose and depth, and a monocular metric depth estimator for scaling. 
+
 | 🗃️ Model Name                  | 📏 Params | 📊 Rel. Depth | 📷 Pose Est. | 🧭 Pose Cond. | 🎨 GS | 📐 Met. Depth | ☁️ Sky Seg | 📄 License     |
 |-------------------------------|-----------|---------------|--------------|---------------|-------|---------------|-----------|----------------|
 | **Nested** | | | | | | | | |
@@ -221,6 +223,9 @@ Generally, you should observe that DA3-LARGE achieves comparable results to VGGT
 
 
 ## ❓ FAQ
+
+- **Monocular Metric Depth**: To obtain metric depth in meters from `DA3METRIC-LARGE`, use `metric_depth = focal * net_output / 300.`, where `focal` is the focal length in pixels (typically the average of fx and fy from the camera intrinsic matrix K). Note that the output from `DA3NESTED-GIANT-LARGE` is already in meters.
+
 
 - **Older GPUs without XFormers support**: See [Issue #11](https://github.com/ByteDance-Seed/Depth-Anything-3/issues/11). Thanks to [@S-Mahoney](https://github.com/S-Mahoney) for the solution!
 
