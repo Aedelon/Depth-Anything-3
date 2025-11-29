@@ -1,2 +1,0 @@
-[console_scripts]
-da3 = depth_anything_3.cli:app

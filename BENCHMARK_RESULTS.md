@@ -1,6 +1,6 @@
 # Depth Anything 3 - Optimizations Benchmark
 
-**Date**: 2025-11-28 20:22:27
+**Date**: 2025-11-29 02:16:47
 
 ## Summary
 
@@ -33,17 +33,17 @@ attn = F.softmax(torch.matmul(q, k.transpose(-2, -1)) * scale, dim=-1)  # Fused
 
 | Sequence Length | Optimized (ms) | Upstream (ms) | Speedup | Improvement |
 |-----------------|----------------|---------------|---------|-------------|
-| 256 | 0.502 ± 0.129 | 0.372 ± 0.017 | 0.74x | -35.1% |
-| 1024 | 2.470 ± 0.119 | 2.451 ± 0.115 | 0.99x | -0.8% |
-| 2048 | 9.247 ± 0.182 | 9.253 ± 0.188 | 1.00x | +0.1% |
+| 256 | 0.428 ± 0.145 | 0.358 ± 0.026 | 0.84x | -19.6% |
+| 1024 | 2.488 ± 0.148 | 2.454 ± 0.100 | 0.99x | -1.4% |
+| 2048 | 9.356 ± 0.148 | 9.315 ± 0.149 | 1.00x | -0.4% |
 
 #### CPU
 
 | Sequence Length | Optimized (ms) | Upstream (ms) | Speedup | Improvement |
 |-----------------|----------------|---------------|---------|-------------|
-| 256 | 0.319 ± 0.049 | 0.550 ± 0.037 | 1.72x | +41.9% |
-| 1024 | 3.307 ± 0.258 | 8.929 ± 0.457 | 2.70x | +63.0% |
-| 2048 | 14.089 ± 2.524 | 30.317 ± 2.124 | 2.15x | +53.5% |
+| 256 | 0.329 ± 0.056 | 0.553 ± 0.049 | 1.68x | +40.5% |
+| 1024 | 3.303 ± 0.254 | 9.356 ± 0.503 | 2.83x | +64.7% |
+| 2048 | 15.060 ± 2.507 | 31.289 ± 0.312 | 2.08x | +51.9% |
 
 ---
 
@@ -65,15 +65,15 @@ attn = F.softmax(torch.matmul(q, k.transpose(-2, -1)) * scale, dim=-1)  # Fused
 
 | Configuration | Time (s) | Throughput | Speedup | Improvement |
 |---------------|----------|------------|---------|-------------|
-| Optimized (12 workers auto) | 0.098 ± 0.002 | 509.9 img/s | 1.16x | +13.8% |
-| Upstream (8 workers) | 0.114 ± 0.001 | 439.8 img/s | 1.00x | +0.0% |
+| Optimized (12 workers auto) | 0.100 ± 0.001 | 501.8 img/s | 1.15x | +13.0% |
+| Upstream (8 workers) | 0.115 ± 0.001 | 436.6 img/s | 1.00x | +0.0% |
 
 #### CPU
 
 | Configuration | Time (s) | Throughput | Speedup | Improvement |
 |---------------|----------|------------|---------|-------------|
-| Optimized (12 workers auto) | 0.097 ± 0.002 | 514.3 img/s | 1.18x | +15.4% |
-| Upstream (8 workers) | 0.115 ± 0.001 | 435.0 img/s | 1.00x | +0.0% |
+| Optimized (12 workers auto) | 0.099 ± 0.001 | 506.7 img/s | 1.17x | +14.3% |
+| Upstream (8 workers) | 0.115 ± 0.001 | 434.3 img/s | 1.00x | +0.0% |
 
 ---
 
@@ -82,15 +82,15 @@ attn = F.softmax(torch.matmul(q, k.transpose(-2, -1)) * scale, dim=-1)  # Fused
 
 ### MPS
 
-- **Attention**: 0.91x (-11.9%)
-- **Preprocessing**: 1.16x (+13.8%)
-- **Combined**: ~1.06x total speedup
+- **Attention**: 0.94x (-7.1%)
+- **Preprocessing**: 1.15x (+13.0%)
+- **Combined**: ~1.08x total speedup
 
 ### CPU
 
-- **Attention**: 2.19x (+52.8%)
-- **Preprocessing**: 1.18x (+15.4%)
-- **Combined**: ~2.59x total speedup
+- **Attention**: 2.20x (+52.4%)
+- **Preprocessing**: 1.17x (+14.3%)
+- **Combined**: ~2.56x total speedup
 
 ---
 

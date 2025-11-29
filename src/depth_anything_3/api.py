@@ -20,8 +20,9 @@ inference, and export capabilities. It supports both single and nested model arc
 
 from __future__ import annotations
 
+import os
 import time
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Any, Dict
 from copy import deepcopy
 import numpy as np
 
@@ -47,14 +48,19 @@ from PIL import Image
 from depth_anything_3.cfg import create_object, load_config
 from depth_anything_3.registry import MODEL_REGISTRY
 from depth_anything_3.specs import Prediction
+
+# --- IMPORTS CRITIQUES ---
 from depth_anything_3.utils.export import export
 from depth_anything_3.utils.geometry import affine_inverse
+from depth_anything_3.utils.pose_align import align_poses_umeyama
+# -------------------------
+
 from depth_anything_3.utils.io.input_processor import InputProcessor
 from depth_anything_3.utils.io.output_processor import OutputProcessor
 from depth_anything_3.utils.logger import logger
-from depth_anything_3.utils.pose_align import align_poses_umeyama
-from depth_anything_3.utils.async_exporter import AsyncExporter
 from depth_anything_3.utils.dynamic_batching import get_sorted_indices_by_aspect_ratio, chunk_indices
+from depth_anything_3.utils.async_exporter import AsyncExporter
+from depth_anything_3.utils.prefetch_pipeline import create_pipeline
 
 # Platform-specific optimizations
 if torch.cuda.is_available():
@@ -71,43 +77,111 @@ elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
 else:
     torch.backends.cudnn.benchmark = False
 
-# torch.compile() optimizations
-if hasattr(torch, '_dynamo'):
-    # Capture scalar outputs to reduce graph breaks
-    torch._dynamo.config.capture_scalar_outputs = True
-    # Enable automatic dynamic shapes for better compilation
-    torch._dynamo.config.automatic_dynamic_shapes = True
-    # Suppress excessive warnings
-    torch._dynamo.config.suppress_errors = False
-    logger.info("torch.compile() optimizations enabled")
-
 SAFETENSORS_NAME = "model.safetensors"
 CONFIG_NAME = "config.json"
 
 
+# --- Classes Wrapper pour compatibilité PrefetchPipeline ---
+
+class DA3InputWrapper:
+    """Wraps dictionary inputs to behave like a Tensor for .to(device)."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self.data = data
+
+    def to(self, device, non_blocking=False):
+        # Transférer uniquement les tenseurs sur le device
+        new_data = {}
+        for k, v in self.data.items():
+            if isinstance(v, torch.Tensor):
+                new_data[k] = v.to(device, non_blocking=non_blocking)
+            else:
+                new_data[k] = v  # Garder les métadonnées (indices, etc.)
+        return DA3InputWrapper(new_data)
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+
+class DA3OutputWrapper:
+    """Wraps dictionary outputs to handle .cpu() call from pipeline."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self.data = data
+
+    def cpu(self):
+        # Renvoyer un dict standard avec les tenseurs sur CPU
+        return {
+            k: v.cpu() if isinstance(v, torch.Tensor) else v
+            for k, v in self.data.items()
+        }
+
+    # --- CORRECTION: Méthodes pour se comporter comme un dict ---
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+    # -----------------------------------------------------------
+
+
+class DA3ModelWrapper(nn.Module):
+    """Adapts DepthAnything3 for the generic PrefetchPipeline."""
+
+    def __init__(self, model: DepthAnything3, export_feat_layers, infer_gs):
+        super().__init__()
+        self.model = model
+        self.kwargs = {'export_feat_layers': export_feat_layers, 'infer_gs': infer_gs}
+
+    def forward(self, wrapper: DA3InputWrapper):
+        # Unpack wrapper
+        data = wrapper.data
+
+        # --- FIX: Préparation des entrées (ajout dimension Batch) ---
+        img = data['image']
+        if img.ndim == 4:
+            img = img.unsqueeze(0)  # (N,3,H,W) -> (1,N,3,H,W)
+
+        ext = data.get('extrinsics')
+        if ext is not None:
+            if ext.ndim == 3:
+                ext = ext.unsqueeze(0)
+            ext = ext.float()
+
+        intri = data.get('intrinsics')
+        if intri is not None:
+            if intri.ndim == 3:
+                intri = intri.unsqueeze(0)
+            intri = intri.float()
+
+        # Run original forward
+        raw_output = self.model(
+            img,
+            ext,
+            intri,
+            **self.kwargs
+        )
+
+        # Package everything needed for post-processing
+        combined = {
+            "raw_output": raw_output,
+            "imgs_cpu": data['imgs_cpu'],
+            "original_indices": data['original_indices'],
+            "proc_ext": data.get('extrinsics'),
+            "proc_int": data.get('intrinsics')
+        }
+
+        return DA3OutputWrapper(combined)
+
+
+# -----------------------------------------------------------
+
 class DepthAnything3(nn.Module, PyTorchModelHubMixin):
     """
     Depth Anything 3 main API class.
-
-    This class provides a high-level interface for depth estimation using Depth Anything 3.
-    It supports both single and nested model architectures with metric scaling capabilities.
-
-    Features:
-    - Hugging Face Hub integration via PyTorchModelHubMixin
-    - Support for multiple model presets (vitb, vitg, nested variants)
-    - Automatic mixed precision inference
-    - Export capabilities for various formats (GLB, PLY, NPZ, etc.)
-    - Camera pose estimation and metric depth scaling
-
-    Usage:
-        # Load from Hugging Face Hub
-        model = DepthAnything3.from_pretrained("huggingface/model-name")
-
-        # Or create with specific preset
-        model = DepthAnything3(preset="vitg")
-
-        # Run inference
-        prediction = model.inference(images, export_dir="output", export_format="glb")
     """
 
     _commit_hash: str | None = None  # Set by mixin when loading from Hub
@@ -119,32 +193,11 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             compile_mode: str = "reduce-overhead",
             batch_size: int | None = None,
             mixed_precision: bool | str | None = None,
+            quantization: bool = False,
             **kwargs
     ):
         """
         Initialize DepthAnything3 with specified preset.
-
-        Args:
-        model_name: The name of the model preset to use.
-                    Examples: 'da3-giant', 'da3-large', 'da3metric-large', 'da3nested-giant-large'.
-        enable_compile: Whether to use torch.compile() for optimization (default: None = auto-detect).
-                       Auto-detects: True for CUDA, False for MPS/CPU.
-                       Provides 30-50% speedup on CUDA but may slow down MPS.
-        compile_mode: Compilation mode for torch.compile() (default: "reduce-overhead").
-                     Options:
-                     - "default": Standard compilation (balanced)
-                     - "reduce-overhead": Minimize Python overhead (best for inference)
-                     - "max-autotune": Maximum performance tuning (slower compilation, CUDA only)
-        batch_size: Batch size for processing images (default: None = process all at once).
-                   Lower values reduce memory usage but may increase processing time.
-        mixed_precision: Mixed precision mode (default: None = auto-detect).
-                        Options:
-                        - None: Auto-detect (bfloat16 on CUDA if supported, float16 otherwise)
-                        - True: Enable with auto-detection
-                        - False: Disable (use float32)
-                        - "bfloat16": Force bfloat16
-                        - "float16": Force float16
-        **kwargs: Additional keyword arguments (currently unused).
         """
         super().__init__()
         self.model_name = model_name
@@ -154,17 +207,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # Validate mixed_precision parameter
         valid_mixed_precision = [None, True, False, "auto", "fp16", "float16", "fp32", "float32", "bf16", "bfloat16"]
         if mixed_precision not in valid_mixed_precision:
-            raise ValueError(
-                f"Invalid mixed_precision value: {mixed_precision!r}\n"
-                f"Valid options: {valid_mixed_precision}\n\n"
-                f"Examples:\n"
-                f"  - None or 'auto': Auto-detect (recommended)\n"
-                f"  - True: Enable with auto-detection\n"
-                f"  - False: Disable (use float32)\n"
-                f"  - 'fp16' or 'float16': Force float16\n"
-                f"  - 'fp32' or 'float32': Force float32\n"
-                f"  - 'bf16' or 'bfloat16': Force bfloat16 (CUDA Ampere+ only)\n"
-            )
+            raise ValueError(f"Invalid mixed_precision value: {mixed_precision}")
         self.mixed_precision = mixed_precision
 
         # Auto-detect optimal compile setting based on device
@@ -183,12 +226,13 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         self.model = create_object(self.config)
         self.model.eval()
 
-        # Apply torch.compile() optimization if enabled and PyTorch 2.0+
+        # Apply torch.compile() optimization with persistent caching
         if self.enable_compile and hasattr(torch, 'compile'):
             try:
+                self._configure_compiler()
                 logger.info(f"Compiling model with torch.compile() (mode={compile_mode})...")
                 self.model = torch.compile(self.model, mode=compile_mode)
-                logger.info("Model compilation successful")
+                logger.info("Model compilation successful (Lazy: will occur on first inference)")
             except Exception as e:
                 logger.warning(f"Model compilation failed, falling back to eager mode: {e}")
 
@@ -199,6 +243,34 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # Device management (set by user)
         self.device = None
 
+    def _configure_compiler(self):
+        """Configure PyTorch Compiler for persistent caching and dynamic shapes."""
+        if not hasattr(torch, "_dynamo") or not hasattr(torch, "_inductor"):
+            return
+
+        torch._dynamo.config.automatic_dynamic_shapes = True
+        torch._dynamo.config.capture_scalar_outputs = True
+        torch._dynamo.config.cache_size_limit = 128
+        torch._dynamo.config.suppress_errors = True
+
+        try:
+            import torch._inductor.config as inductor_config
+            inductor_config.fx_graph_cache = True
+
+            default_cache_path = os.path.join(os.getcwd(), ".cache", "da3_compiler")
+            cache_dir = os.environ.get("DA3_COMPILER_CACHE_DIR", default_cache_path)
+            os.makedirs(cache_dir, exist_ok=True)
+
+            if hasattr(inductor_config, "cache_dir"):
+                inductor_config.cache_dir = cache_dir
+
+            logger.info(f"Persistent compilation cache enabled at: {cache_dir}")
+
+        except ImportError:
+            logger.warning("Could not import torch._inductor.config. Persistent caching disabled.")
+        except Exception as e:
+            logger.warning(f"Failed to configure compiler cache: {e}")
+
     @torch.inference_mode()
     def forward(
             self,
@@ -208,19 +280,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             export_feat_layers: list[int] | None = None,
             infer_gs: bool = False,
     ) -> dict[str, torch.Tensor]:
-        """
-        Forward pass through the model.
-
-        Args:
-            image: Input batch with shape ``(B, N, 3, H, W)`` on the model device.
-            extrinsics: Optional camera extrinsics with shape ``(B, N, 4, 4)``.
-            intrinsics: Optional camera intrinsics with shape ``(B, N, 3, 3)``.
-            export_feat_layers: Layer indices to return intermediate features for.
-
-        Returns:
-            Dictionary containing model predictions
-        """
-        # Determine mixed precision settings
+        """Forward pass through the model."""
         use_autocast, autocast_dtype = self._get_autocast_settings(image.device)
 
         with torch.no_grad():
@@ -245,32 +305,35 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             export_dir: str | None = None,
             export_format: str = "mini_npz",
             export_feat_layers: Sequence[int] | None = None,
-            # GLB export parameters
             conf_thresh_percentile: float = 40.0,
             num_max_points: int = 1_000_000,
             show_cameras: bool = True,
-            # Feat_vis export parameters
             feat_vis_fps: int = 15,
-            # Other export parameters
             export_kwargs: Optional[dict] = {},
+            use_prefetch: bool | None = None,  # NEW PARAMETER
     ) -> Prediction:
         """
-        Run inference on input images using Dynamic Resolution Batching and Async Export.
+        Run inference using Input Prefetching, Dynamic Batching, Async Export, and Caching.
         """
         if "gs" in export_format:
             assert infer_gs, "must set `infer_gs=True` to perform gs-related export."
-
         if "colmap" in export_format:
             assert isinstance(image[0], str), "`image` must be image paths for COLMAP export."
 
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
 
+        # --- Auto-Detect Prefetch Strategy ---
+        device = self._get_model_device()
+        if use_prefetch is None:
+            # Disable prefetch on MPS by default (Unified Memory contention slows it down)
+            if device.type == 'mps':
+                use_prefetch = False
+            else:
+                use_prefetch = True
+
         # --- Export Strategy Setup ---
-        # Séparer les formats "streamables" (safe pour l'async par batch) des formats globaux
         streaming_formats = []
         global_formats = []
-
-        # Liste des formats qui produisent des fichiers individuels (et donc safe pour le batch processing)
         SAFE_STREAMING_FORMATS = ["mini_npz", "npz", "depth_vis"]
 
         if export_dir:
@@ -278,87 +341,123 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 if fmt in SAFE_STREAMING_FORMATS:
                     streaming_formats.append(fmt)
                 else:
-                    # GLB, Video, Colmap nécessitent le contexte global ou sont des fichiers monolithiques
                     global_formats.append(fmt)
 
         streaming_fmt_str = "-".join(streaming_formats)
         global_fmt_str = "-".join(global_formats)
 
-        # --- Dynamic Batching Setup ---
+        # --- Dynamic Batching & Prefetch Setup ---
         bs = self.batch_size or len(image)
         num_images = len(image)
         sorted_indices, _ = get_sorted_indices_by_aspect_ratio(image)
         all_results = []
 
         logger.info(
-            f"Running inference on {num_images} images (Batch: {bs}) | Async Export: {'ON' if streaming_fmt_str else 'OFF'}")
+            f"Running inference on {num_images} images (Batch: {bs}) | Async Export: {'ON' if streaming_fmt_str else 'OFF'} | Prefetch: {'ON' if use_prefetch else 'OFF (MPS Default)'}")
 
-        # Initialiser l'exportateur asynchrone
         exporter = AsyncExporter() if streaming_fmt_str else None
 
-        try:
-            # --- Processing Loop ---
-            for batch_idx_list in chunk_indices(sorted_indices, bs):
-                # a. Extract batch data
-                batch_images = [image[i] for i in batch_idx_list]
-                batch_ext = extrinsics[batch_idx_list] if extrinsics is not None else None
-                batch_int = intrinsics[batch_idx_list] if intrinsics is not None else None
+        # --- STANDARD LOOP (No Prefetch - for MPS or Explicit OFF) ---
+        if not use_prefetch:
+            try:
+                for batch_idx_list in chunk_indices(sorted_indices, bs):
+                    # a. Extract & Preprocess
+                    batch_images = [image[i] for i in batch_idx_list]
+                    batch_ext = extrinsics[batch_idx_list] if extrinsics is not None else None
+                    batch_int = intrinsics[batch_idx_list] if intrinsics is not None else None
 
-                # b. Preprocess
-                imgs_cpu, proc_ext, proc_int = self._preprocess_inputs(
-                    batch_images, batch_ext, batch_int, process_res, process_res_method
-                )
-
-                # c. Forward
-                imgs_tensor, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, proc_ext, proc_int)
-                ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
-
-                raw_output = self._run_model_forward(
-                    imgs_tensor, ex_t_norm, in_t, export_feat_layers, infer_gs
-                )
-
-                # d. Convert & Align
-                batch_prediction = self._convert_to_prediction(raw_output)
-                batch_prediction = self._align_to_input_extrinsics_intrinsics(
-                    proc_ext, proc_int, batch_prediction, align_to_input_ext_scale
-                )
-                batch_prediction = self._add_processed_images(batch_prediction, imgs_cpu)
-
-                # e. Async Export (Streaming)
-                if exporter:
-                    # On crée une copie des kwargs pour ce batch
-                    batch_kwargs = deepcopy(export_kwargs)
-
-                    # On soumet la tâche d'export au thread worker
-                    exporter.submit(
-                        self._handle_exports,
-                        batch_prediction,
-                        streaming_fmt_str,
-                        export_dir,
-                        batch_kwargs,
-                        infer_gs, render_exts, render_ixts, render_hw,
-                        conf_thresh_percentile, num_max_points, show_cameras,
-                        feat_vis_fps, process_res_method,
-                        batch_images  # Passer les images du batch pour le nommage des fichiers
+                    imgs_cpu, proc_ext, proc_int = self._preprocess_inputs(
+                        batch_images, batch_ext, batch_int, process_res, process_res_method
                     )
 
-                # f. Store results
-                for local_i, global_i in enumerate(batch_idx_list):
-                    single_pred = self._extract_single_prediction(batch_prediction, local_i)
-                    all_results.append((global_i, single_pred))
+                    # b. Forward
+                    imgs_tensor, ex_t, in_t = self._prepare_model_inputs(imgs_cpu, proc_ext, proc_int)
+                    ex_t_norm = self._normalize_extrinsics(ex_t.clone() if ex_t is not None else None)
+                    raw_output = self._run_model_forward(imgs_tensor, ex_t_norm, in_t, export_feat_layers, infer_gs)
 
-        finally:
-            # S'assurer que tous les exports asynchrones sont terminés
-            if exporter:
-                exporter.shutdown(wait=True)
+                    # c. Convert
+                    batch_prediction = self._convert_to_prediction(raw_output)
+                    batch_prediction = self._align_to_input_extrinsics_intrinsics(proc_ext, proc_int, batch_prediction,
+                                                                                  align_to_input_ext_scale)
+                    batch_prediction = self._add_processed_images(batch_prediction, imgs_cpu)
 
-        # --- Reassembly ---
+                    # d. Export
+                    if exporter:
+                        # Reconstruct batch_images list for filenames (safe assumption: same length/order)
+                        batch_images_export = [image[i] for i in batch_idx_list]
+                        batch_kwargs = deepcopy(export_kwargs)
+                        exporter.submit(
+                            self._handle_exports, batch_prediction, streaming_fmt_str, export_dir, batch_kwargs,
+                            infer_gs, render_exts, render_ixts, render_hw, conf_thresh_percentile, num_max_points,
+                            show_cameras, feat_vis_fps, process_res_method, batch_images_export
+                        )
+
+                    # e. Store
+                    for local_i, global_i in enumerate(batch_idx_list):
+                        single_pred = self._extract_single_prediction(batch_prediction, local_i)
+                        all_results.append((global_i, single_pred))
+            finally:
+                if exporter: exporter.shutdown(wait=True)
+
+        # --- PREFETCH LOOP (For CUDA/CPU) ---
+        else:
+            model_wrapper = DA3ModelWrapper(self, export_feat_layers, infer_gs)
+            pipeline = create_pipeline(model_wrapper, device, prefetch_factor=2)
+
+            def batch_generator():
+                for batch_idx_list in chunk_indices(sorted_indices, bs):
+                    batch_images = [image[i] for i in batch_idx_list]
+                    batch_ext = extrinsics[batch_idx_list] if extrinsics is not None else None
+                    batch_int = intrinsics[batch_idx_list] if intrinsics is not None else None
+
+                    imgs_cpu, proc_ext, proc_int = self._preprocess_inputs(
+                        batch_images, batch_ext, batch_int, process_res, process_res_method
+                    )
+
+                    if device.type in ('cuda', 'mps') and imgs_cpu.ndim == 4:
+                        imgs_cpu = imgs_cpu.to(memory_format=torch.channels_last)
+                    if device.type == 'cuda':
+                        imgs_cpu = imgs_cpu.pin_memory()
+
+                    yield DA3InputWrapper({
+                        "image": imgs_cpu, "extrinsics": proc_ext, "intrinsics": proc_int,
+                        "imgs_cpu": imgs_cpu, "original_indices": batch_idx_list, "batch_images": batch_images
+                    })
+
+            try:
+                pipeline_results = pipeline.run_inference(batch_generator())
+                for res_dict in pipeline_results:
+                    raw_output = res_dict["raw_output"]
+                    imgs_cpu = res_dict["imgs_cpu"]
+                    batch_idx_list = res_dict["original_indices"]
+                    proc_ext = res_dict["proc_ext"]
+                    proc_int = res_dict["proc_int"]
+                    batch_images = res_dict.get("batch_images", [])  # Safe get
+
+                    batch_prediction = self._convert_to_prediction(raw_output)
+                    batch_prediction = self._align_to_input_extrinsics_intrinsics(proc_ext, proc_int, batch_prediction,
+                                                                                  align_to_input_ext_scale)
+                    batch_prediction = self._add_processed_images(batch_prediction, imgs_cpu)
+
+                    if exporter:
+                        batch_kwargs = deepcopy(export_kwargs)
+                        exporter.submit(
+                            self._handle_exports, batch_prediction, streaming_fmt_str, export_dir, batch_kwargs,
+                            infer_gs, render_exts, render_ixts, render_hw, conf_thresh_percentile, num_max_points,
+                            show_cameras, feat_vis_fps, process_res_method, batch_images
+                        )
+
+                    for local_i, global_i in enumerate(batch_idx_list):
+                        single_pred = self._extract_single_prediction(batch_prediction, local_i)
+                        all_results.append((global_i, single_pred))
+            finally:
+                if exporter: exporter.shutdown(wait=True)
+
+        # --- Reassembly & Global Export ---
         all_results.sort(key=lambda x: x[0])
         ordered_preds = [res[1] for res in all_results]
         final_prediction = self._collate_predictions(ordered_preds)
 
-        # --- Global Export ---
-        # Exporter les formats restants (GLB, Video...) qui nécessitent toutes les données
         if export_dir and global_fmt_str:
             logger.info(f"Exporting global formats: {global_fmt_str}")
             self._handle_exports(
@@ -371,7 +470,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         return final_prediction
 
     def _extract_single_prediction(self, pred: Prediction, index: int) -> Prediction:
-        """Extrait le i-ème élément d'un objet Prediction batché."""
+        """Extract i-th element from batched Prediction."""
         init_kwargs = {}
         for field in pred.__dataclass_fields__:
             val = getattr(pred, field)
@@ -379,12 +478,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 init_kwargs[field] = None
                 continue
 
-            # Slicing logic
-            if (not isinstance(val, dict)
-                    and hasattr(val, "__getitem__")
-                    and hasattr(val, "shape")
-                    and val.shape[0] > index
-            ):
+            if not isinstance(val, dict) and hasattr(val, "__getitem__") and hasattr(val, "shape") and val.shape[
+                0] > index:
                 init_kwargs[field] = val[index: index + 1]
             elif isinstance(val, dict):
                 new_dict = {}
@@ -398,10 +493,8 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         return Prediction(**init_kwargs)
 
     def _collate_predictions(self, preds: list[Prediction]) -> Prediction:
-        """Fusionne une liste de Predictions en une seule Prediction."""
+        """Merge list of Predictions into one."""
         if not preds:
-            # Retourne None ou lève une erreur appropriée si la liste est vide
-            # Ici on suppose que le code appelant gère ça ou que preds n'est jamais vide
             return None
 
         first = preds[0]
@@ -415,19 +508,55 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
             if isinstance(val_0, np.ndarray):
                 all_vals = [getattr(p, field) for p in preds]
+                # Use robust padding concatenation
                 init_kwargs[field] = self._pad_concat_numpy(all_vals)
             elif isinstance(val_0, dict):
                 merged_dict = {}
-                # Assuming all dicts have same keys
                 for k in val_0.keys():
                     all_sub_vals = [getattr(p, field)[k] for p in preds]
-                    merged_dict[k] = np.concatenate(all_sub_vals, axis=0)
+                    merged_dict[k] = self._pad_concat_numpy(all_sub_vals)
                 init_kwargs[field] = merged_dict
             else:
-                # For scalars or lists that shouldn't be concatenated, take the first one
                 init_kwargs[field] = val_0
 
         return Prediction(**init_kwargs)
+
+    def _pad_concat_numpy(self, arrays: list[np.ndarray], axis: int = 0) -> np.ndarray:
+        """Pad and concatenate numpy arrays with different spatial dimensions."""
+        if not arrays:
+            return np.array([])
+
+        first_shape = arrays[0].shape
+        need_padding = False
+        for arr in arrays[1:]:
+            if len(arr.shape) != len(first_shape) or any(
+                    arr.shape[i] != first_shape[i] for i in range(1, len(first_shape))):
+                need_padding = True
+                break
+
+        if not need_padding:
+            return np.concatenate(arrays, axis=axis)
+
+        max_dims = list(first_shape)
+        for arr in arrays:
+            for i in range(1, len(arr.shape)):
+                if i < len(max_dims):
+                    max_dims[i] = max(max_dims[i], arr.shape[i])
+                else:
+                    max_dims.append(arr.shape[i])
+
+        padded_arrays = []
+        for arr in arrays:
+            pad_width = [(0, 0)] * len(arr.shape)
+            for i in range(1, len(arr.shape)):
+                pad_needed = max_dims[i] - arr.shape[i]
+                if pad_needed > 0:
+                    pad_width[i] = (0, pad_needed)
+
+            padded_arr = np.pad(arr, pad_width=pad_width, mode='constant', constant_values=0)
+            padded_arrays.append(padded_arr)
+
+        return np.concatenate(padded_arrays, axis=axis)
 
     def _handle_exports(
             self, prediction, export_format, export_dir, export_kwargs,
@@ -448,7 +577,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                         "out_image_hw": render_hw,
                     }
                 )
-        # Add GLB export parameters
         if "glb" in export_format:
             if "glb" not in export_kwargs:
                 export_kwargs["glb"] = {}
@@ -459,7 +587,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                     "show_cameras": show_cameras,
                 }
             )
-        # Add Feat_vis export parameters
         if "feat_vis" in export_format:
             if "feat_vis" not in export_kwargs:
                 export_kwargs["feat_vis"] = {}
@@ -468,7 +595,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                     "fps": feat_vis_fps,
                 }
             )
-        # Add COLMAP export parameters
         if "colmap" in export_format:
             if "colmap" not in export_kwargs:
                 export_kwargs["colmap"] = {}
@@ -516,7 +642,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         """Prepare tensors for model input."""
         device = self._get_model_device()
 
-        # Use pinned memory for faster H2D copies on CUDA
         if device.type == 'cuda' and imgs_cpu.device.type == 'cpu':
             imgs_cpu = imgs_cpu.pin_memory()
             if extrinsics is not None and extrinsics.device.type == 'cpu':
@@ -524,17 +649,11 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             if intrinsics is not None and intrinsics.device.type == 'cpu':
                 intrinsics = intrinsics.pin_memory()
 
-        # Apply channels_last to CPU tensor first (if it's 4D)
         if device.type in ('cuda', 'mps') and imgs_cpu.ndim == 4:
             imgs_cpu = imgs_cpu.to(memory_format=torch.channels_last)
 
-        # Move images to model device and add batch dimension
         imgs = imgs_cpu.to(device, non_blocking=True)[None].float()
 
-        # Apply channels_last to the batched tensor if needed (now it's 5D: B, N, C, H, W)
-        # Note: channels_last only works for 4D tensors, so we skip it for 5D
-
-        # Convert camera parameters to tensors
         ex_t = (
             extrinsics.to(device, non_blocking=True)[None].float()
             if extrinsics is not None
@@ -556,11 +675,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             export_feat_layers: Sequence[int] | None,
             infer_gs: bool,
     ) -> dict[str, torch.Tensor]:
-        """
-        Run forward pass, optionally splitting the batch to save memory.
-        Note: This is kept for backward compatibility but dynamic batching uses
-        the loop inside inference() directly.
-        """
+        """Legacy method for backward compatibility."""
         num_imgs = imgs_cpu.shape[0]
         bs = self.batch_size or num_imgs
         if bs >= num_imgs:
@@ -592,7 +707,6 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             if torch.is_tensor(vals[0]) and vals[0].ndim >= 2 and vals[0].shape[0] == 1:
                 merged[k] = torch.cat(vals, dim=1)
             else:
-                # For scalars or non-batched entries, keep the last one
                 merged[k] = vals[-1]
         return merged
 
@@ -668,16 +782,12 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
     def _add_processed_images(self, prediction: Prediction, imgs_cpu: torch.Tensor) -> Prediction:
         """Add processed images to prediction for visualization."""
-        # Convert from (N, 3, H, W) to (N, H, W, 3) and denormalize
-        processed_imgs = imgs_cpu.permute(0, 2, 3, 1).cpu().numpy()  # (N, H, W, 3)
-
-        # Denormalize from ImageNet normalization
+        processed_imgs = imgs_cpu.permute(0, 2, 3, 1).cpu().numpy()
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         processed_imgs = processed_imgs * std + mean
         processed_imgs = np.clip(processed_imgs, 0, 1)
         processed_imgs = (processed_imgs * 255).astype(np.uint8)
-
         prediction.processed_images = processed_imgs
         return prediction
 
@@ -691,147 +801,57 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         logger.info(f"Export Results Done. Time: {end_time - start_time} seconds")
 
     def _get_autocast_settings(self, device: torch.device) -> tuple[bool, torch.dtype | None]:
-        """
-        Determine autocast settings based on mixed_precision configuration.
-
-        Args:
-            device: The device where the model is running
-
-        Returns:
-            Tuple of (use_autocast, dtype)
-        """
-        # If mixed precision is explicitly disabled
+        """Determine autocast settings."""
         if self.mixed_precision is False:
             return False, None
 
-        # If mixed precision is explicitly set to a dtype string
         if isinstance(self.mixed_precision, str):
             dtype_map = {
                 "bfloat16": torch.bfloat16,
                 "float16": torch.float16,
             }
             if self.mixed_precision in dtype_map:
-                # bf16 not reliably supported on MPS; fall back to fp16 there
                 if device.type == "mps" and self.mixed_precision in ["bf16", "bfloat16"]:
-                    logger.warning(
-                        "bfloat16 is not supported on MPS (Apple Silicon). "
-                        "Falling back to float16. "
-                        "To suppress this warning, use mixed_precision='float16' explicitly."
-                    )
+                    logger.warning("bfloat16 not supported on MPS, falling back to float16.")
                     return True, torch.float16
                 return True, dtype_map[self.mixed_precision]
             else:
                 logger.warning(f"Unknown mixed precision dtype: {self.mixed_precision}, using auto-detect")
 
-        # Auto-detect (default behavior when mixed_precision is None or True)
         if device.type == "cuda":
-            # Use bfloat16 on CUDA if supported, otherwise float16
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             return True, dtype
         elif device.type == "mps":
-            # Default to fp32 on MPS; allow opt-in fp16 when explicitly requested
             if self.mixed_precision is True:
                 return True, torch.float16
             return False, None
         else:
-            # CPU: optionally use float16 if explicitly enabled
             if self.mixed_precision is True:
                 return True, torch.float16
             return False, None
 
     def to(self, *args, **kwargs):
-        """
-        Override to() to optimize model when moving to GPU devices.
-
-        Applies channels_last memory format for better performance on CUDA/MPS.
-        """
+        """Override to() to optimize model when moving to GPU devices."""
         result = super().to(*args, **kwargs)
-
-        # Apply channels_last to the underlying model for GPU acceleration
         device = args[0] if args else kwargs.get('device')
         if device is not None:
             device_type = device if isinstance(device, str) else device.type
             if device_type in ('cuda', 'mps'):
                 try:
-                    # Convert model to channels_last for better conv performance
                     self.model = self.model.to(memory_format=torch.channels_last)
                     logger.info(f"Model converted to channels_last format for {device_type}")
                 except Exception as e:
                     logger.warning(f"Failed to convert to channels_last: {e}")
-
         return result
 
     def _get_model_device(self) -> torch.device:
-        """
-        Get the device where the model is located.
-
-        Returns:
-            Device where the model parameters are located
-
-        Raises:
-            ValueError: If no tensors are found in the model
-        """
+        """Get the device where the model is located."""
         if self.device is not None:
             return self.device
-
-        # Find device from parameters
         for param in self.parameters():
             self.device = param.device
             return param.device
-
-        # Find device from buffers
         for buffer in self.buffers():
             self.device = buffer.device
             return buffer.device
-
         raise ValueError("No tensor found in model")
-
-    def _pad_concat_numpy(self, arrays: list[np.ndarray], axis: int = 0) -> np.ndarray:
-        """
-        Remplit (pad) et concatène les tableaux numpy ayant des dimensions spatiales différentes.
-        Ceci est nécessaire pour reassembler les résultats du Dynamic Batching.
-        """
-        if not arrays:
-            # Retourne un tableau vide compatible avec l'initialisation ultérieure
-            return np.array([])
-
-        # 1. Vérification rapide si le padding est nécessaire
-        need_padding = False
-        first_shape = arrays[0].shape
-        for arr in arrays[1:]:
-            if len(arr.shape) != len(first_shape) or any(
-                    arr.shape[i] != first_shape[i] for i in range(1, len(first_shape))):
-                need_padding = True
-                break
-
-        if not need_padding:
-            # Chemins rapide : concaténation standard si toutes les dimensions correspondent
-            return np.concatenate(arrays, axis=axis)
-
-        # 2. Trouver les dimensions maximales
-        max_dims = list(first_shape)
-        for arr in arrays:
-            # Commence à l'index 1 (dim de batch 0 est ignorée)
-            for i in range(1, len(arr.shape)):
-                if i < len(max_dims):
-                    max_dims[i] = max(max_dims[i], arr.shape[i])
-                # Gère le cas improbable où un tableau a plus de dimensions spatiales
-                else:
-                    max_dims.append(arr.shape[i])
-
-        # 3. Appliquer le padding et concaténer
-        padded_arrays = []
-        for arr in arrays:
-            pad_width = [(0, 0)] * len(arr.shape)
-            # Applique le padding de l'index 1 aux dimensions maximales
-            for i in range(1, len(arr.shape)):
-                pad_needed = max_dims[i] - arr.shape[i]
-                if pad_needed > 0:
-                    # Pad seulement à la fin (droite/bas)
-                    pad_width[i] = (0, pad_needed)
-
-                    # Utilise 'constant' (valeur par défaut 0) pour remplir l'espace
-            padded_arr = np.pad(arr, pad_width=pad_width, mode='constant', constant_values=0)
-            padded_arrays.append(padded_arr)
-
-        return np.concatenate(padded_arrays, axis=axis)
