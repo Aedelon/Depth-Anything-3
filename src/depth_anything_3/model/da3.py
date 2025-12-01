@@ -105,6 +105,7 @@ class DepthAnything3Net(nn.Module):
         export_feat_layers: list[int] | None = [],
         infer_gs: bool = False,
         use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through the network.
@@ -114,6 +115,9 @@ class DepthAnything3Net(nn.Module):
             extrinsics: Camera extrinsics (B, N, 4, 4) 
             intrinsics: Camera intrinsics (B, N, 3, 3) 
             feat_layers: List of layer indices to extract features from
+            infer_gs: Enable Gaussian Splatting branch
+            use_ray_pose: Use ray-based pose estimation
+            ref_view_strategy: Strategy for selecting reference view
 
         Returns:
             Dictionary containing predictions and auxiliary features
@@ -126,7 +130,7 @@ class DepthAnything3Net(nn.Module):
             cam_token = None
 
         feats, aux_feats = self.backbone(
-            x, cam_token=cam_token, export_feat_layers=export_feat_layers
+            x, cam_token=cam_token, export_feat_layers=export_feat_layers, ref_view_strategy=ref_view_strategy
         )
         # feats = [[item for item in feat] for feat in feats]
         H, W = x.shape[-2], x.shape[-1]
@@ -140,10 +144,38 @@ class DepthAnything3Net(nn.Module):
                 output = self._process_camera_estimation(feats, H, W, output)
             if infer_gs:
                 output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
+        
+        output = self._process_mono_sky_estimation(output)    
 
         # Extract auxiliary features if requested
         output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
 
+        return output
+
+    def _process_mono_sky_estimation(
+        self, output: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Process mono sky estimation."""
+        if "sky" not in output:
+            return output
+        non_sky_mask = compute_sky_mask(output.sky, threshold=0.3)
+        if non_sky_mask.sum() <= 10:
+            return output
+        if (~non_sky_mask).sum() <= 10:
+            return output
+        
+        non_sky_depth = output.depth[non_sky_mask]
+        if non_sky_depth.numel() > 100000:
+            idx = torch.randint(0, non_sky_depth.numel(), (100000,), device=non_sky_depth.device)
+            sampled_depth = non_sky_depth[idx]
+        else:
+            sampled_depth = non_sky_depth
+        non_sky_max = torch.quantile(sampled_depth, 0.99)
+
+        # Set sky regions to maximum depth and high confidence
+        output.depth, _ = set_sky_regions_to_max_depth(
+            output.depth, None, non_sky_mask, max_depth=non_sky_max
+        )
         return output
 
     def _process_ray_pose_estimation(
@@ -309,6 +341,7 @@ class NestedDepthAnything3Net(nn.Module):
         export_feat_layers: list[int] | None = [],
         infer_gs: bool = False,
         use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through both branches with metric scaling alignment.
@@ -318,16 +351,18 @@ class NestedDepthAnything3Net(nn.Module):
             extrinsics: Camera extrinsics (B, N, 4, 4) - unused
             intrinsics: Camera intrinsics (B, N, 3, 3) - unused
             feat_layers: List of layer indices to extract features from
-            metric_feat: Whether to use metric features (unused)
+            infer_gs: Enable Gaussian Splatting branch
+            use_ray_pose: Use ray-based pose estimation
+            ref_view_strategy: Strategy for selecting reference view
 
         Returns:
             Dictionary containing aligned depth predictions and camera parameters
         """
         # Get predictions from both branches
         output = self.da3(
-            x, extrinsics, intrinsics, export_feat_layers=export_feat_layers, infer_gs=infer_gs, use_ray_pose=use_ray_pose
+            x, extrinsics, intrinsics, export_feat_layers=export_feat_layers, infer_gs=infer_gs, use_ray_pose=use_ray_pose, ref_view_strategy=ref_view_strategy
         )
-        metric_output = self.da3_metric(x, infer_gs=infer_gs)
+        metric_output = self.da3_metric(x)
 
         # Apply metric scaling and alignment
         output = self._apply_metric_scaling(output, metric_output)

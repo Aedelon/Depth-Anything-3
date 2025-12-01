@@ -39,42 +39,20 @@ class ModelInference:
     def __init__(self):
         """Initialize the model inference handler."""
         self.model = None
-        self.model_opts: Dict[str, Any] = {
-            "batch_size": None,
-            "mixed_precision": None,
-        }
 
-    def initialize_model(
-        self,
-        device: str = "cuda",
-        *,
-        batch_size: Optional[int] = None,
-        mixed_precision: Optional[str] = "auto",
-    ) -> None:
+    def initialize_model(self, device: str = "cuda") -> None:
         """
         Initialize the DepthAnything3 model.
 
         Args:
             device: Device to load the model on
         """
-        desired_opts = {
-            "batch_size": batch_size,
-            "mixed_precision": None if mixed_precision == "auto" else mixed_precision,
-        }
-
-        should_reload = (self.model is None) or (desired_opts != self.model_opts)
-
-        if should_reload:
+        if self.model is None:
             # Get model directory from environment variable or use default
             model_dir = os.environ.get(
                 "DA3_MODEL_DIR", "/dev/shm/da3_models/DA3HF-VITG-METRIC_VITL"
             )
-            self.model = DepthAnything3.from_pretrained(
-                model_dir,
-                batch_size=desired_opts["batch_size"],
-                mixed_precision=desired_opts["mixed_precision"],
-            )
-            self.model_opts = desired_opts
+            self.model = DepthAnything3.from_pretrained(model_dir)
             self.model = self.model.to(device)
         else:
             self.model = self.model.to(device)
@@ -87,13 +65,11 @@ class ModelInference:
         filter_black_bg: bool = False,
         filter_white_bg: bool = False,
         process_res_method: str = "upper_bound_resize",
-        batch_size: Optional[int] = None,
-        mixed_precision: str = "auto",
         show_camera: bool = True,
-        selected_first_frame: Optional[str] = None,
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
         infer_gs: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",
     ) -> Tuple[Any, Dict[int, Dict[str, Any]]]:
@@ -102,35 +78,28 @@ class ModelInference:
 
         Args:
             target_dir: Directory containing images
-            apply_mask: Whether to apply mask for ambiguous depth classes
-            mask_edges: Whether to mask edges
             filter_black_bg: Whether to filter black background
             filter_white_bg: Whether to filter white background
             process_res_method: Method for resizing input images
             show_camera: Whether to show camera in 3D view
-            selected_first_frame: Selected first frame filename
             save_percentage: Percentage of points to save (0-100)
+            num_max_points: Maximum number of points in point cloud
             infer_gs: Whether to infer 3D Gaussian Splatting
+            ref_view_strategy: Reference view selection strategy
+            gs_trj_mode: Trajectory mode for 3DGS
+            gs_video_quality: Video quality for 3DGS
 
         Returns:
             Tuple of (prediction, processed_data)
         """
         print(f"Processing images from {target_dir}")
 
-        # Device check: prioritize CUDA > MPS > CPU
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
+        # Device check
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device)
 
         # Initialize model if needed
-        self.initialize_model(
-            device,
-            batch_size=batch_size,
-            mixed_precision=mixed_precision,
-        )
+        self.initialize_model(device)
 
         # Get image paths
         print("Loading images...")
@@ -148,36 +117,9 @@ class ModelInference:
         print(f"Found {len(all_image_paths)} images")
         print(f"All image paths: {all_image_paths}")
 
-        # Apply first frame selection logic
-        if selected_first_frame:
-            # Find the image with matching filename
-            selected_path = None
-            for path in all_image_paths:
-                if os.path.basename(path) == selected_first_frame:
-                    selected_path = path
-                    break
-
-            if selected_path:
-                # Move selected frame to the front
-                image_paths = [selected_path] + [
-                    path for path in all_image_paths if path != selected_path
-                ]
-                print(f"User selected first frame: {selected_first_frame} -> {selected_path}")
-                print(f"Reordered image paths: {image_paths}")
-            else:
-                # Use default order if no match found
-                image_paths = all_image_paths
-                print(
-                    f"Selected frame '{selected_first_frame}' not found in image paths. "
-                    "Using default order."
-                )
-                first_frame_display = image_paths[0] if image_paths else "No images"
-                print(f"Using default order (first frame): {first_frame_display}")
-        else:
-            # Use default order (sorted)
-            image_paths = all_image_paths
-            first_frame_display = image_paths[0] if image_paths else "No images"
-            print(f"Using default order (first frame): {first_frame_display}")
+        # Use sorted image order (reference view will be selected automatically)
+        image_paths = all_image_paths
+        print(f"Reference view selection strategy: {ref_view_strategy}")
 
         if len(image_paths) == 0:
             raise ValueError("No images found. Check your upload.")
@@ -188,26 +130,14 @@ class ModelInference:
 
         # Run model inference
         print(f"Running inference with method: {actual_method}")
-        effective_batch = batch_size if batch_size is not None else min(len(image_paths), 4)
-        try:
-            with torch.no_grad():
-                prediction = self.model.inference(
-                    image_paths,
-                    export_dir=None,
-                    process_res_method=actual_method,
-                    infer_gs=infer_gs,
-                    export_feat_layers=[],
-                )
-        except RuntimeError as e:
-            # Friendly message for OOM / invalid buffer
-            msg = str(e).lower()
-            if "invalid buffer size" in msg or "out of memory" in msg:
-                raise ValueError(
-                    "Inference failed: insufficient memory. "
-                    "Essayez de réduire le nombre d'images, de choisir 'low_res', "
-                    "ou de définir un batch_size plus petit."
-                ) from e
-            raise
+        with torch.no_grad():
+            prediction = self.model.inference(
+                image_paths,
+                export_dir=None,
+                process_res_method=actual_method,
+                infer_gs=infer_gs,
+                ref_view_strategy=ref_view_strategy,
+            )
         # num_max_points: int = 1_000_000,
         export_to_glb(
             prediction,

@@ -33,13 +33,12 @@ class UIComponents:
     def __init__(self):
         """Initialize the UI components handler."""
 
-    def create_upload_section(self) -> Tuple[gr.Video, gr.Slider, gr.File, gr.Gallery, gr.Button]:
+    def create_upload_section(self) -> Tuple[gr.Video, gr.Slider, gr.File, gr.Gallery]:
         """
         Create the upload section with video, images, and gallery components.
 
         Returns:
-            A tuple of Gradio components: (input_video, s_time_interval, input_images,
-            image_gallery, select_first_frame_btn).
+            A tuple of Gradio components: (input_video, s_time_interval, input_images, image_gallery).
         """
         input_video = gr.Video(label="Upload Video", interactive=True)
         s_time_interval = gr.Slider(
@@ -62,10 +61,7 @@ class UIComponents:
             interactive=False,
         )
 
-        # Select first frame button (moved below image gallery)
-        select_first_frame_btn = gr.Button("Select First Frame", scale=1)
-
-        return input_video, s_time_interval, input_images, image_gallery, select_first_frame_btn
+        return input_video, s_time_interval, input_images, image_gallery
 
     def create_3d_viewer_section(self) -> gr.Model3D:
         """
@@ -199,14 +195,12 @@ class UIComponents:
             measure_text,
         )
 
-    def create_inference_control_section(
-        self,
-    ) -> Tuple[gr.Dropdown, gr.Checkbox, gr.Number, gr.Dropdown]:
+    def create_inference_control_section(self) -> Tuple[gr.Dropdown, gr.Checkbox, gr.Dropdown]:
         """
         Create the inference control section (before inference).
 
         Returns:
-            Tuple of (process_res_method_dropdown, infer_gs, batch_size, mixed_precision)
+            Tuple of (process_res_method_dropdown, infer_gs, ref_view_strategy)
         """
         with gr.Row():
             process_res_method_dropdown = gr.Dropdown(
@@ -216,6 +210,7 @@ class UIComponents:
                 info="low_res for much more images",
                 scale=1,
             )
+            # Modify line 220, add color class
             infer_gs = gr.Checkbox(
                 label="Infer 3D Gaussian Splatting",
                 value=False,
@@ -225,25 +220,15 @@ class UIComponents:
                 ),
                 scale=1,
             )
-
-        with gr.Row():
-            batch_size = gr.Number(
-                label="Batch size (sub-batching)",
-                value=None,
-                precision=0,
-                minimum=1,
-                maximum=64,
-                step=1,
-                info="Process images in chunks to limit memory. Leave empty for all-at-once.",
-            )
-            mixed_precision = gr.Dropdown(
-                choices=["auto", "fp16", "fp32", "bf16"],
-                value="auto",
-                label="Mixed precision",
-                info="MPS: default fp32; fp16 opt-in. CUDA: auto uses bf16/fp16.",
+            ref_view_strategy = gr.Dropdown(
+                choices=["saddle_balanced", "saddle_sim_range", "first", "middle"],
+                value="saddle_balanced",
+                label="Reference View Strategy",
+                info="Strategy for selecting reference view from multiple inputs",
+                scale=1,
             )
 
-        return (process_res_method_dropdown, infer_gs, batch_size, mixed_precision)
+        return (process_res_method_dropdown, infer_gs, ref_view_strategy)
 
     def create_display_control_section(
         self,

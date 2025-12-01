@@ -130,10 +130,10 @@ class DepthAnything3App:
                         filter_black_bg=filter_black_bg,
                         filter_white_bg=filter_white_bg,
                         process_res_method="high_res" if use_high_res_gs else "low_res",
-                        selected_first_frame="",
                         save_percentage=save_percentage,
                         num_max_points=num_max_points,
                         infer_gs=use_high_res_gs,
+                        ref_view_strategy="saddle_balanced",
                         gs_trj_mode=gs_trj_mode,
                         gs_video_quality=gs_video_quality,
                     )
@@ -172,7 +172,6 @@ class DepthAnything3App:
             is_example = gr.Textbox(label="is_example", visible=False, value="None")
             processed_data_state = gr.State(value=None)
             measure_points_state = gr.State(value=[])
-            selected_first_frame_state = gr.State(value="")
             selected_image_index_state = gr.State(value=0)  # Track selected image index
             # current_view_index = gr.State(value=0)  # noqa: F841 Track current view index
 
@@ -191,7 +190,6 @@ class DepthAnything3App:
                         s_time_interval,
                         input_images,
                         image_gallery,
-                        select_first_frame_btn,
                     ) = self.ui_components.create_upload_section()
 
                 with gr.Column(scale=4):
@@ -225,12 +223,9 @@ class DepthAnything3App:
                                 gs_video, gs_info = self.ui_components.create_nvs_video()
 
                         # Inference control section (before inference)
-                        (
-                            process_res_method_dropdown,
-                            infer_gs,
-                            batch_size_ctrl,
-                            mixed_precision_ctrl,
-                        ) = self.ui_components.create_inference_control_section()
+                        (process_res_method_dropdown, infer_gs, ref_view_strategy_dropdown) = (
+                            self.ui_components.create_inference_control_section()
+                        )
 
                         # Display control section - includes 3DGS options, buttons, and Visualization Options  # noqa: E501
                         (
@@ -280,15 +275,12 @@ class DepthAnything3App:
                 filter_black_bg,
                 filter_white_bg,
                 process_res_method_dropdown,
-                batch_size_ctrl,
-                mixed_precision_ctrl,
                 save_percentage,
                 submit_btn,
                 clear_btn,
                 num_max_points,
                 infer_gs,
-                select_first_frame_btn,
-                selected_first_frame_state,
+                ref_view_strategy_dropdown,
                 selected_image_index_state,
                 measure_view_selector,
                 measure_image,
@@ -326,15 +318,12 @@ class DepthAnything3App:
         filter_black_bg: gr.Checkbox,
         filter_white_bg: gr.Checkbox,
         process_res_method_dropdown: gr.Dropdown,
-        batch_size_ctrl: gr.Number,
-        mixed_precision_ctrl: gr.Dropdown,
         save_percentage: gr.Slider,
         submit_btn: gr.Button,
         clear_btn: gr.ClearButton,
         num_max_points: gr.Slider,
         infer_gs: gr.Checkbox,
-        select_first_frame_btn: gr.Button,
-        selected_first_frame_state: gr.State,
+        ref_view_strategy_dropdown: gr.Dropdown,
         selected_image_index_state: gr.State,
         measure_view_selector: gr.Dropdown,
         measure_image: gr.Image,
@@ -380,13 +369,11 @@ class DepthAnything3App:
                 filter_black_bg,
                 filter_white_bg,
                 process_res_method_dropdown,
-                batch_size_ctrl,
-                mixed_precision_ctrl,
-                selected_first_frame_state,
                 save_percentage,
                 # pass num_max_points
                 num_max_points,
                 infer_gs,
+                ref_view_strategy_dropdown,
                 gs_trj_mode,
                 gs_video_quality,
             ],
@@ -414,8 +401,6 @@ class DepthAnything3App:
             filter_black_bg,
             filter_white_bg,
             process_res_method_dropdown,
-            batch_size_ctrl,
-            mixed_precision_ctrl,
             target_dir_output,
             is_example,
             reconstruction_output,
@@ -432,25 +417,6 @@ class DepthAnything3App:
             fn=self.event_handlers.handle_uploads,
             inputs=[input_video, input_images, s_time_interval],
             outputs=[reconstruction_output, target_dir_output, image_gallery, log_output],
-        )
-
-        # Image gallery click handler (for selecting first frame)
-        def handle_image_selection(evt: gr.SelectData):
-            if evt is None or evt.index is None:
-                return "No image selected", 0
-            selected_index = evt.index
-            return f"Selected image {selected_index} as potential first frame", selected_index
-
-        image_gallery.select(
-            fn=handle_image_selection,
-            outputs=[log_output, selected_image_index_state],
-        )
-
-        # Select first frame handler
-        select_first_frame_btn.click(
-            fn=self.event_handlers.select_first_frame,
-            inputs=[image_gallery, selected_image_index_state],
-            outputs=[image_gallery, log_output, selected_first_frame_state],
         )
 
         # Navigation handlers
@@ -494,8 +460,6 @@ class DepthAnything3App:
         filter_black_bg: gr.Checkbox,
         filter_white_bg: gr.Checkbox,
         process_res_method_dropdown: gr.Dropdown,
-        batch_size_ctrl: gr.Number,
-        mixed_precision_ctrl: gr.Dropdown,
         target_dir_output: gr.Textbox,
         is_example: gr.Textbox,
         reconstruction_output: gr.Model3D,
@@ -510,8 +474,6 @@ class DepthAnything3App:
             filter_black_bg,
             filter_white_bg,
             process_res_method_dropdown,
-            batch_size_ctrl,
-            mixed_precision_ctrl,
         ]
 
         # Set up change handlers for all visualization controls
@@ -672,8 +634,8 @@ Examples:
     # Directory configuration
     parser.add_argument(
         "--model-dir",
-        default="depth-anything/DA3-BASE",
-        help="Path to the model directory (default: depth-anything/DA3-BASE)",
+        default="depth-anything/DA3NESTED-GIANT-LARGE",
+        help="Path to the model directory (default: depth-anything/DA3NESTED-GIANT-LARGE)",
     )
     parser.add_argument(
         "--workspace-dir",
