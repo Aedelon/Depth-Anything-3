@@ -107,6 +107,21 @@ prediction = model.inference(
 )
 ```
 
+### 🎯 Reference View Selection
+```python
+# For multi-view inputs, automatically select the best reference view
+prediction = model.inference(
+    image=image_paths,
+    ref_view_strategy="saddle_balanced",  # Default: balanced selection
+)
+
+# For video sequences, use middle frame as reference
+prediction = model.inference(
+    image=video_frames,
+    ref_view_strategy="middle",  # Good for temporally ordered inputs
+)
+```
+
 ## 🔧 Core API
 
 ### 🔨 DepthAnything3 Class
@@ -146,6 +161,7 @@ prediction = model.inference(
     align_to_input_ext_scale=True,   # Whether to align predicted poses to input scale
     infer_gs=True,                   # Enable Gaussian branch for gs exports
     use_ray_pose=False,              # Use ray-based pose estimation instead of camera decoder
+    ref_view_strategy="saddle_balanced",  # Reference view selection strategy
     render_exts=render_extrinsics,    # Optional renders for gs_video
     render_ixts=render_intrinsics,    # Optional renders for gs_video
     render_hw=(height, width),        # Optional renders for gs_video
@@ -207,6 +223,15 @@ prediction = model.inference(
 #### `use_ray_pose` (default: False)
 - **Type**: `bool`
 - **Description**: Use ray-based pose estimation instead of camera decoder for pose prediction. When True, the model uses ray prediction heads to estimate camera poses; when False, it uses the camera decoder approach.
+
+#### `ref_view_strategy` (default: "saddle_balanced")
+- **Type**: `str`
+- **Description**: Strategy for selecting the reference view from multiple input views. Options: `"first"`, `"middle"`, `"saddle_balanced"`, `"saddle_sim_range"`. Only applied when number of views ≥ 3. See [detailed documentation](funcs/ref_view_strategy.md) for strategy comparisons.
+- **Available strategies**:
+  - `"saddle_balanced"`: Selects view with balanced features across multiple metrics (recommended default)
+  - `"saddle_sim_range"`: Selects view with largest similarity range
+  - `"first"`: Always uses first view (not recommended, equivalent to no reordering for views < 3)
+  - `"middle"`: Uses middle view (recommended for video sequences)
 
 ### 🔍 Feature Export Parameters
 

@@ -105,6 +105,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         export_feat_layers: list[int] | None = None,
         infer_gs: bool = False,
         use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> dict[str, torch.Tensor]:
         """
         Forward pass through the model.
@@ -116,6 +117,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             export_feat_layers: Layer indices to return intermediate features for.
             infer_gs: Enable Gaussian Splatting branch.
             use_ray_pose: Use ray-based pose estimation instead of camera decoder.
+            ref_view_strategy: Strategy for selecting reference view from multiple views.
 
         Returns:
             Dictionary containing model predictions
@@ -125,7 +127,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         with torch.no_grad():
             with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
                 return self.model(
-                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose
+                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
                 )
 
     def inference(
@@ -136,6 +138,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         align_to_input_ext_scale: bool = True,
         infer_gs: bool = False,
         use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
         render_exts: np.ndarray | None = None,
         render_ixts: np.ndarray | None = None,
         render_hw: tuple[int, int] | None = None,
@@ -163,6 +166,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             align_to_input_ext_scale: whether to align the input pose scale to the prediction
             infer_gs: Enable the 3D Gaussian branch (needed for `gs_ply`/`gs_video` exports)
             use_ray_pose: Use ray-based pose estimation instead of camera decoder (default: False)
+            ref_view_strategy: Strategy for selecting reference view from multiple views.
+                Options: "first", "middle", "saddle_balanced", "saddle_sim_range".
+                Default: "saddle_balanced". For single view input (S ≤ 2), no reordering is performed.
             render_exts: Optional render extrinsics for Gaussian video export
             render_ixts: Optional render intrinsics for Gaussian video export
             render_hw: Optional render resolution for Gaussian video export
@@ -201,7 +207,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
 
         raw_output = self._run_model_forward(
-            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose
+            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
         )
 
         # Convert raw output to prediction
@@ -366,6 +372,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         export_feat_layers: Sequence[int] | None = None,
         infer_gs: bool = False,
         use_ray_pose: bool = False,
+        ref_view_strategy: str = "saddle_balanced",
     ) -> dict[str, torch.Tensor]:
         """Run model forward pass."""
         device = imgs.device
@@ -374,7 +381,7 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             torch.cuda.synchronize(device)
         start_time = time.time()
         feat_layers = list(export_feat_layers) if export_feat_layers is not None else None
-        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose)
+        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)
         if need_sync:
             torch.cuda.synchronize(device)
         end_time = time.time()

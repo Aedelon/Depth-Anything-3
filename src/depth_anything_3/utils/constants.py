@@ -16,3 +16,4 @@ DEFAULT_MODEL = "depth-anything/DA3NESTED-GIANT-LARGE"
 DEFAULT_EXPORT_DIR = "workspace/gallery/scene"
 DEFAULT_GALLERY_DIR = "workspace/gallery"
 DEFAULT_GRADIO_DIR = "workspace/gradio"
+THRESH_FOR_REF_SELECTION = 3

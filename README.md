@@ -40,6 +40,7 @@ All models are trained exclusively on **public academic datasets**.
 
 
 ## 📰 News
+- **30-11-2025:** Add [`use_ray_pose`](#use-ray-pose) and [`ref_view_strategy`](docs/funcs/ref_view_strategy.md) (reference view selection for multi-view inputs).   
 - **25-11-2025:** Add [Awesome DA3 Projects](#-awesome-da3-projects), a community-driven section featuring DA3-based applications.
 - **14-11-2025:** Paper, project page, code and models are all released.
 
@@ -226,7 +227,7 @@ The Nested series uses an Any-view model to estimate pose and depth, and a monoc
 
 - **Monocular Metric Depth**: To obtain metric depth in meters from `DA3METRIC-LARGE`, use `metric_depth = focal * net_output / 300.`, where `focal` is the focal length in pixels (typically the average of fx and fy from the camera intrinsic matrix K). Note that the output from `DA3NESTED-GIANT-LARGE` is already in meters.
 
-- **Ray Head**:  Our API and CLI support `use_ray_head` arg, which means that the model will derive camera pose from ray head, which is generally slightly slower, but more accurate. Note that the default is `False` for faster inference speed. 
+- <a id="use-ray-pose"></a>**Ray Head (`use_ray_pose`)**:  Our API and CLI support `use_ray_pose` arg, which means that the model will derive camera pose from ray head, which is generally slightly slower, but more accurate. Note that the default is `False` for faster inference speed. 
   <details>
   <summary>AUC3 Results for DA3NESTED-GIANT-LARGE</summary>
   
