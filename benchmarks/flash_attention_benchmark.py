@@ -132,6 +132,21 @@ def print_header():
     print("=" * 80 + "\n")
 
 
+def get_sdpa_backend_info():
+    """Get info about which SDPA backend is being used."""
+    info = {}
+    if torch.cuda.is_available():
+        from torch.backends.cuda import (
+            flash_sdp_enabled,
+            mem_efficient_sdp_enabled,
+            math_sdp_enabled,
+        )
+        info["flash_sdp"] = flash_sdp_enabled()
+        info["mem_efficient_sdp"] = mem_efficient_sdp_enabled()
+        info["math_sdp"] = math_sdp_enabled()
+    return info
+
+
 def print_device_info(device_info):
     """Print device information."""
     print("📊 HARDWARE CONFIGURATION")
@@ -148,9 +163,19 @@ def print_device_info(device_info):
         else:
             print(f"                     ❌ Flash Attention requires ≥7.5")
 
-    print(f"\n  Flash Attention  : {'✅ Installed' if FLASH_ATTN_AVAILABLE else '❌ Not installed'}")
-    if FLASH_ATTN_AVAILABLE:
-        print(f"  FA Version       : {FLASH_ATTN_VERSION}")
+    # SDPA backend info
+    sdpa_info = get_sdpa_backend_info()
+    if sdpa_info:
+        print(f"\n  PyTorch SDPA Backends:")
+        print(f"    Flash SDP      : {'✅ Enabled' if sdpa_info.get('flash_sdp') else '❌ Disabled'}")
+        print(f"    MemEfficient   : {'✅ Enabled' if sdpa_info.get('mem_efficient_sdp') else '❌ Disabled'}")
+        print(f"    Math SDP       : {'✅ Enabled' if sdpa_info.get('math_sdp') else '❌ Disabled'}")
+
+        if sdpa_info.get('flash_sdp'):
+            print(f"\n  ⚡ PyTorch SDPA uses Flash Attention internally!")
+            print(f"     (No need for flash-attn package with PyTorch >= 2.2)")
+
+    print(f"\n  flash-attn pkg   : {'✅ Installed v' + FLASH_ATTN_VERSION if FLASH_ATTN_AVAILABLE else '❌ Not installed (optional)'}")
     print()
 
 
@@ -319,24 +344,41 @@ def run_benchmark(test_configs, backends, warmup=5, runs=20, detailed=False):
     print("📋 SUMMARY & RECOMMENDATIONS")
     print("=" * 80)
 
+    sdpa_info = get_sdpa_backend_info()
+
     if device.type == "cuda":
-        if FLASH_ATTN_AVAILABLE:
-            print("\n✅ Flash Attention is ACTIVE and working")
+        # Check if PyTorch SDPA has Flash enabled
+        if sdpa_info.get('flash_sdp'):
+            print("\n✅ Flash Attention is ACTIVE via PyTorch SDPA!")
+            print("\n   Your setup:")
+            print(f"   • PyTorch {torch.__version__} with native Flash Attention")
+            print("   • SDPA backend: Flash SDP ⚡")
+            print("   • No additional packages needed!")
+            print("\n   Benefits you're already getting:")
+            print("   • 2-4x faster attention vs manual implementation")
+            print("   • Memory-efficient attention computation")
+            print("   • Automatic kernel selection per input size")
+
+            if FLASH_ATTN_AVAILABLE:
+                print(f"\n   ℹ️  flash-attn v{FLASH_ATTN_VERSION} also installed")
+                print("      (May provide slight additional optimization in some cases)")
+            else:
+                print("\n   ℹ️  flash-attn package: Not needed!")
+                print("      PyTorch >= 2.2 includes Flash Attention natively.")
+
+        elif FLASH_ATTN_AVAILABLE:
+            print("\n✅ Flash Attention is ACTIVE via flash-attn package")
+            print(f"\n   Using flash-attn v{FLASH_ATTN_VERSION}")
             print("\n   Benefits:")
             print("   • 2-3x faster attention computation")
             print("   • ~15-25% overall inference speedup")
             print("   • Lower memory usage")
-            print("   • Automatic backend selection")
-            print("\n   ⚡ Your inference is already optimized!")
 
         else:
-            print("\n⚠️  Flash Attention NOT installed")
-            print("\n   Install with:")
-            print("   $ pip install flash-attn --no-build-isolation")
-            print("\n   Expected improvements:")
-            print("   • 2-3x faster attention layers")
-            print("   • 15-25% faster full inference")
-            print("   • Especially beneficial for Large and Giant models")
+            print("\n⚠️  Flash Attention not available")
+            print("\n   Options to enable:")
+            print("   1. Upgrade PyTorch to >= 2.2 (recommended)")
+            print("   2. Install flash-attn: pip install flash-attn --no-build-isolation")
 
     elif device.type == "mps":
         print("\n📱 Apple Silicon (MPS) detected")
@@ -348,6 +390,22 @@ def run_benchmark(test_configs, backends, warmup=5, runs=20, detailed=False):
         print("\n💻 CPU detected")
         print("\n   • Consider using GPU for faster inference")
         print("   • Flash Attention is CUDA-only")
+
+    # Print SDPA vs Manual speedup summary
+    print("\n" + "─" * 80)
+    print("⚡ PERFORMANCE COMPARISON")
+    print("─" * 80)
+    print("\n   SDPA vs Manual attention speedup (per layer):")
+
+    for model_name, model_results in all_results.items():
+        if model_results:
+            # Get XLarge config results for most impact
+            xlarge_key = next((k for k in model_results.keys() if "xlarge" in k.lower()), list(model_results.keys())[-1])
+            if xlarge_key in model_results:
+                res = model_results[xlarge_key]
+                if res.get("sdpa") and res.get("manual"):
+                    speedup = res["manual"]["mean_ms"] / res["sdpa"]["mean_ms"]
+                    print(f"   • {model_name.upper():6s}: {speedup:.1f}x faster (sdpa: {res['sdpa']['mean_ms']:.2f}ms vs manual: {res['manual']['mean_ms']:.2f}ms)")
 
     print("\n" + "=" * 80)
     print()

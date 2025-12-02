@@ -367,12 +367,19 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         device = self._get_model_device()
 
         # 1. Handle Image Tensor
-        if imgs_cpu.device == device:
+        # Compare device types (handles cuda:0 vs cuda comparison)
+        imgs_on_target_device = (imgs_cpu.device.type == device.type)
+        if imgs_on_target_device:
             # Case A: Already on correct device (GPUInputProcessor)
-            # Just ensure batch dimension and correct dtype
+            # Ensure correct shape: (B, S, C, H, W) where B=1
             imgs = imgs_cpu
             if imgs.dim() == 3:
+                # Single image (C, H, W) -> (1, 1, C, H, W)
+                imgs = imgs.unsqueeze(0).unsqueeze(0)
+            elif imgs.dim() == 4:
+                # Batch of images (N, C, H, W) -> (1, N, C, H, W)
                 imgs = imgs.unsqueeze(0)
+            # dim() == 5 means already correct shape
             if imgs.dtype == torch.uint8:
                  # Should not happen with GPUInputProcessor default, but safety fallback
                  imgs = imgs.float() / 255.0
