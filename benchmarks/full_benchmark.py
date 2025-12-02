@@ -7,10 +7,12 @@ Tests:
 1. Preprocessing: CPU vs GPU Decode (NVJPEG)
 2. Attention: SDPA (Flash) vs Manual
 3. End-to-End: All models x All preprocessing methods
+4. Adaptive Batching: Auto vs Fixed batch sizes
 
 Usage:
     python benchmarks/full_benchmark.py
     python benchmarks/full_benchmark.py --quick
+    python benchmarks/full_benchmark.py --skip-batching
 """
 
 import argparse
@@ -314,6 +316,118 @@ def benchmark_inference(device, runs=3, models=None, quick=False):
     return results
 
 
+def benchmark_adaptive_batching(device, model_name="da3-large", num_images=20, process_res=504, runs=2):
+    """Benchmark adaptive batching vs fixed batch sizes."""
+    from depth_anything_3.api import DepthAnything3
+    from depth_anything_3.utils.adaptive_batching import estimate_max_batch_size
+
+    results = {"fixed": {}, "adaptive": {}}
+    temp_dir = "temp_batch"
+
+    # Create test images
+    os.makedirs(temp_dir, exist_ok=True)
+    pil_imgs = []
+    for i in range(num_images):
+        img = Image.new("RGB", (1280, 720), color=(100 + i % 50, 150, 200))
+        pil_imgs.append(img)
+
+    try:
+        # Load model once
+        cleanup()
+        os.environ["DA3_ATTENTION_BACKEND"] = "sdpa"
+        model = DepthAnything3(model_name=model_name, device=device, use_cache=False)
+
+        # Get estimated optimal batch size
+        optimal_batch = estimate_max_batch_size(model_name, device, process_res)
+        print(f"    Estimated optimal batch: {optimal_batch}")
+
+        # Warmup
+        model.inference(pil_imgs[:2], process_res=process_res)
+        sync_device(device)
+
+        # Test fixed batch sizes
+        fixed_sizes = [1, 2, 4]
+        if optimal_batch > 4:
+            fixed_sizes.append(optimal_batch)
+
+        for batch_size in fixed_sizes:
+            cleanup()
+            times = []
+            oom = False
+
+            for run in range(runs):
+                try:
+                    sync_device(device)
+                    start = time.perf_counter()
+
+                    for i in range(0, num_images, batch_size):
+                        end_idx = min(i + batch_size, num_images)
+                        model.inference(pil_imgs[i:end_idx], process_res=process_res)
+
+                    sync_device(device)
+                    times.append((time.perf_counter() - start) * 1000)
+
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower():
+                        oom = True
+                        cleanup()
+                        break
+                    raise
+
+            if oom:
+                results["fixed"][f"B={batch_size}"] = {"oom": True}
+                print(f"    Fixed B={batch_size}: OOM")
+            else:
+                avg_ms = np.mean(times)
+                fps = num_images / (avg_ms / 1000)
+                results["fixed"][f"B={batch_size}"] = {"ms": avg_ms, "fps": fps}
+                print(f"    Fixed B={batch_size}: {avg_ms:.0f} ms ({fps:.1f} img/s)")
+
+        # Test adaptive batching
+        for utilization in [0.85]:
+            cleanup()
+            times = []
+            batch_sizes_used = []
+
+            for run in range(runs):
+                sync_device(device)
+                start = time.perf_counter()
+
+                predictions = model.batch_inference(
+                    images=pil_imgs,
+                    process_res=process_res,
+                    batch_size="auto",
+                    target_memory_utilization=utilization,
+                )
+
+                sync_device(device)
+                times.append((time.perf_counter() - start) * 1000)
+
+                if run == 0:
+                    for pred in predictions:
+                        if hasattr(pred, "depth"):
+                            batch_sizes_used.append(len(pred.depth))
+
+            avg_ms = np.mean(times)
+            fps = num_images / (avg_ms / 1000)
+            results["adaptive"][f"{int(utilization*100)}%"] = {
+                "ms": avg_ms,
+                "fps": fps,
+                "batches": batch_sizes_used,
+            }
+            batch_str = ",".join(map(str, batch_sizes_used[:3]))
+            if len(batch_sizes_used) > 3:
+                batch_str += "..."
+            print(f"    Adaptive {int(utilization*100)}%: {avg_ms:.0f} ms ({fps:.1f} img/s) [batches: {batch_str}]")
+
+        del model
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return results
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -321,7 +435,9 @@ def benchmark_inference(device, runs=3, models=None, quick=False):
 def main():
     parser = argparse.ArgumentParser(description="DA3 Full Benchmark")
     parser.add_argument("--quick", action="store_true", help="Quick mode")
-    parser.add_argument("--skip-inference", action="store_true")
+    parser.add_argument("--skip-inference", action="store_true", help="Skip inference benchmark")
+    parser.add_argument("--skip-batching", action="store_true", help="Skip adaptive batching benchmark")
+    parser.add_argument("--batch-images", type=int, default=20, help="Number of images for batching test")
     args = parser.parse_args()
 
     runs_preprocess = 3 if args.quick else 5
@@ -370,6 +486,7 @@ def main():
         print(f"{config:<20} {sdpa:>6.2f} ms    {manual:>6.2f} ms    {speedup:>5.1f}x")
 
     # 3. End-to-End Inference
+    inference_results = {}
     if not args.skip_inference:
         print("\n[3] END-TO-END INFERENCE (1280x720 input)")
         print("-" * 70)
@@ -387,6 +504,22 @@ def main():
                 worst = batch_1[worst_key]
                 speedup = worst["ms"] / best["ms"] if best["ms"] > 0 else 0
                 print(f"    {model:<12} {best['desc']:<22} {best['fps']:>5.1f} img/s ({speedup:.1f}x vs {worst['desc']})")
+
+    # 4. Adaptive Batching
+    batching_results = {}
+    if not args.skip_batching:
+        num_batch_images = 10 if args.quick else args.batch_images
+        runs_batching = 1 if args.quick else 2
+        print(f"\n[4] ADAPTIVE BATCHING ({num_batch_images} images, da3-large)")
+        print("-" * 70)
+        batching_results = benchmark_adaptive_batching(
+            device,
+            model_name="da3-large",
+            num_images=num_batch_images,
+            process_res=504,
+            runs=runs_batching,
+        )
+        all_results["batching"] = batching_results
 
     # Summary (computed from results)
     print("\n" + "=" * 70)
@@ -433,6 +566,28 @@ def main():
                 worst = batch_1[worst_key]
                 speedup = worst["ms"] / best["ms"] if best["ms"] > 0 else 0
                 print(f"   {model:<12} {best['fps']:>5.1f} img/s with {best['desc']} ({speedup:.1f}x vs {worst['desc']})")
+
+    # Batching summary
+    if not args.skip_batching and batching_results:
+        print(f" Batching:")
+        # Find best fixed batch
+        valid_fixed = {k: v for k, v in batching_results["fixed"].items() if not v.get("oom")}
+        if valid_fixed:
+            best_fixed_key = max(valid_fixed.keys(), key=lambda k: valid_fixed[k]["fps"])
+            best_fixed = valid_fixed[best_fixed_key]
+
+            # Get adaptive result
+            adaptive = batching_results["adaptive"].get("85%", {})
+            if adaptive:
+                adaptive_fps = adaptive["fps"]
+                fixed_fps = best_fixed["fps"]
+                if adaptive_fps >= fixed_fps:
+                    improvement = (adaptive_fps / fixed_fps - 1) * 100
+                    print(f"   Adaptive: {adaptive_fps:.1f} img/s (+{improvement:.0f}% vs {best_fixed_key})")
+                else:
+                    overhead = (fixed_fps / adaptive_fps - 1) * 100
+                    print(f"   Adaptive: {adaptive_fps:.1f} img/s ({overhead:.0f}% overhead vs {best_fixed_key})")
+                    print(f"   Note: Fixed batch may be faster when memory is abundant")
 
     print("=" * 70 + "\n")
 
