@@ -35,10 +35,10 @@ class MPSOptimizer(BaseOptimizer):
 
     def apply_platform_settings(self) -> None:
         """Apply MPS-specific PyTorch settings."""
-        # Set memory fraction (leave headroom for system and fragmentation)
-        # 0.7 instead of 0.8 to prevent OOM from memory fragmentation
+        # Set memory fraction (balance between available memory and system headroom)
+        # 0.85 provides good balance after testing
         if hasattr(torch.mps, "set_per_process_memory_fraction"):
-            torch.mps.set_per_process_memory_fraction(0.7)
+            torch.mps.set_per_process_memory_fraction(0.85)
 
         # Set matmul precision
         torch.set_float32_matmul_precision("medium")
