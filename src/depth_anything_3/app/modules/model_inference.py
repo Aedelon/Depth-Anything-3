@@ -176,7 +176,7 @@ class ModelInference:
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",
         model_name: str = None,
-    ) -> Tuple[Any, Dict[int, Dict[str, Any]]]:
+    ) -> Tuple[Any, dict]:
         """
         Run DepthAnything3 model inference on images.
 
@@ -409,7 +409,7 @@ class ModelInference:
 
     def _process_results(
         self, target_dir: str, prediction: Any, image_paths: list
-    ) -> Dict[int, Dict[str, Any]]:
+    ) -> dict:
         """
         Process model results into structured data.
 

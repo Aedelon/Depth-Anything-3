@@ -64,7 +64,7 @@ def create_depth_visualization(depth: np.ndarray) -> Optional[np.ndarray]:
 
 
 def save_to_gallery_func(
-    target_dir: str, processed_data: Dict[int, Dict[str, Any]], gallery_name: Optional[str] = None
+    target_dir: str, processed_data: dict, gallery_name: Optional[str] = None
 ) -> Tuple[bool, str]:
     """
     Save the current reconstruction results to the gallery directory.

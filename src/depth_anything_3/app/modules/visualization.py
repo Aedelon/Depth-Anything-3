@@ -35,7 +35,7 @@ class VisualizationHandler:
         """Initialize the visualization handler."""
 
     def update_view_selectors(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]]
+        self, processed_data: Optional[dict]
     ) -> Tuple[gr.Dropdown, gr.Dropdown]:
         """
         Update view selector dropdowns based on available views.
@@ -58,7 +58,7 @@ class VisualizationHandler:
         )
 
     def get_view_data_by_index(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]], view_index: int
+        self, processed_data: Optional[dict], view_index: int
     ) -> Optional[Dict[str, Any]]:
         """
         Get view data by index, handling bounds.
@@ -80,7 +80,7 @@ class VisualizationHandler:
         return processed_data[view_keys[view_index]]
 
     def update_depth_view(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]], view_index: int
+        self, processed_data: Optional[dict], view_index: int
     ) -> Optional[str]:
         """
         Update depth view for a specific view index.
@@ -101,7 +101,7 @@ class VisualizationHandler:
 
     def navigate_depth_view(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         current_selector_value: str,
         direction: int,
     ) -> Tuple[str, Optional[str]]:
@@ -134,7 +134,7 @@ class VisualizationHandler:
         return new_selector_value, depth_vis
 
     def update_measure_view(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]], view_index: int
+        self, processed_data: Optional[dict], view_index: int
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List]:
         """
         Update measure view for a specific view index.
@@ -183,7 +183,7 @@ class VisualizationHandler:
 
     def navigate_measure_view(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         current_selector_value: str,
         direction: int,
     ) -> Tuple[str, Optional[np.ndarray], Optional[str], List]:
@@ -218,7 +218,7 @@ class VisualizationHandler:
         return new_selector_value, measure_image, depth_right_half, measure_points
 
     def populate_visualization_tabs(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]]
+        self, processed_data: Optional[dict]
     ) -> Tuple[Optional[str], Optional[np.ndarray], Optional[str], List]:
         """
         Populate the depth and measure tabs with processed data.
@@ -239,7 +239,7 @@ class VisualizationHandler:
         return depth_vis, measure_img, depth_right_half, []
 
     def reset_measure(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]]
+        self, processed_data: Optional[dict]
     ) -> Tuple[Optional[np.ndarray], List, str]:
         """
         Reset measure points.
@@ -259,7 +259,7 @@ class VisualizationHandler:
 
     def measure(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         measure_points: List,
         current_view_selector: str,
         event: gr.SelectData,

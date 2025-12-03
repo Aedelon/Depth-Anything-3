@@ -453,7 +453,7 @@ class EventHandlers:
 
     def navigate_depth_view(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         current_selector: str,
         direction: int,
     ) -> Tuple[str, Optional[str]]:
@@ -473,7 +473,7 @@ class EventHandlers:
         )
 
     def update_depth_view(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]], view_index: int
+        self, processed_data: Optional[dict], view_index: int
     ) -> Optional[str]:
         """
         Update depth view for a specific view index.
@@ -489,7 +489,7 @@ class EventHandlers:
 
     def navigate_measure_view(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         current_selector: str,
         direction: int,
     ) -> Tuple[str, Optional[np.ndarray], Optional[np.ndarray], List]:
@@ -509,7 +509,7 @@ class EventHandlers:
         )
 
     def update_measure_view(
-        self, processed_data: Optional[Dict[int, Dict[str, Any]]], view_index: int
+        self, processed_data: Optional[dict], view_index: int
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], List]:
         """
         Update measure view for a specific view index.
@@ -525,7 +525,7 @@ class EventHandlers:
 
     def measure(
         self,
-        processed_data: Optional[Dict[int, Dict[str, Any]]],
+        processed_data: Optional[dict],
         measure_points: List,
         current_view_selector: str,
         event: gr.SelectData,

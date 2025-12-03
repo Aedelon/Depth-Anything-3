@@ -33,6 +33,6 @@ requests
 typer>=0.9.0,<0.13.0
 omegaconf
 
-# Gradio app - pin compatible versions
-gradio==4.44.1
-huggingface_hub>=0.19,<1.0
+# Gradio app
+gradio>=5.50.0,<6.0
+huggingface_hub>=0.33.5,<2.0
