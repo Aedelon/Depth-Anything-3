@@ -1,3 +1,6 @@
+# Install this package from GitHub
+git+https://github.com/Aedelon/awesome-depth-anything-3.git
+
 # Core dependencies - torch MUST be first for xformers
 torch>=2
 torchvision
