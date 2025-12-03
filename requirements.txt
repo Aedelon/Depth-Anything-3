@@ -1,24 +1,36 @@
-pre-commit
-trimesh
+# Core dependencies - torch MUST be first for xformers
 torch>=2
 torchvision
-einops
-huggingface_hub
-imageio
 numpy<2
+
+# ML/Vision libraries
+einops
+kornia>=0.7.0
+safetensors
+
+# Image/Video processing
+pillow
+pillow_heif
+imageio
 opencv-python
-xformers; platform_system!='Darwin'
+moviepy==1.0.3
+
+# 3D and geometry
+trimesh
+plyfile
 open3d
+e3nn
+evo
+pycolmap
+
+# API and config
+huggingface_hub
 fastapi
 uvicorn
 requests
-typer
-pillow
+typer>=0.9.0,<0.13.0
 omegaconf
-evo
-e3nn
-moviepy
-plyfile
-pillow_heif
-safetensors
-pycolmap
+
+# Gradio app
+gradio>=4.44,<5.0
+pydantic>=2.0,<2.10
