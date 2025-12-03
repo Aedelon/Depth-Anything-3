@@ -27,13 +27,12 @@ evo
 pycolmap
 
 # API and config
-huggingface_hub
 fastapi
 uvicorn
 requests
 typer>=0.9.0,<0.13.0
 omegaconf
 
-# Gradio app
-gradio>=4.44,<5.0
-pydantic>=2.0,<2.10
+# Gradio app - pin compatible versions
+gradio==4.44.1
+huggingface_hub>=0.19,<1.0
